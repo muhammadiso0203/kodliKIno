@@ -1,50 +1,41 @@
 import { Injectable } from '@nestjs/common';
-import { Context, Markup, Telegraf } from 'telegraf';
-import * as dotenv from 'dotenv';
-import {
-  setupAdminPanel,
-  findMovieByCode,
-  users,
-  saveUsers,
-} from './admin-panel.js';
-import { join, resolve } from 'path';
+import { Telegraf, Markup } from 'telegraf';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Movie } from 'src/entity/MovieEntity';
+import { User } from '../entity/user.entity';
 import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import * as dotenv from 'dotenv';
+import { setupAdminPanel } from './admin-panel';
+import { RequiredChannel } from 'src/entity/requiredchannel.entity';
 
 dotenv.config();
 
 const requiredChannelPath = resolve('data', 'required_channel.json');
-
-
-// 📦 Kanal nomini xavfsiz o‘qish
-let channel: string = '';
+let channel = '';
 
 try {
   const data = JSON.parse(readFileSync(requiredChannelPath, 'utf8'));
   if (typeof data.channel === 'string' && data.channel.startsWith('@')) {
     channel = data.channel;
   } else {
-    console.warn('⚠️ Kanal nomi noto‘g‘ri yoki yo‘q:', data.channel);
+    console.warn('⚠️ Kanal noto‘g‘ri:', data.channel);
   }
 } catch (err) {
   console.error('❌ Kanal faylini o‘qishda xatolik:', err);
 }
 
-// 🔍 Obuna tekshirish funksiyasi
-export async function isUserMember(
+async function isUserMember(
   bot: Telegraf<any>,
   channel: string,
   userId: number,
-): Promise<boolean> {
+) {
   try {
-    if (!channel || typeof channel !== 'string' || !channel.startsWith('@')) {
-      console.warn('⚠️ Kanal nomi noto‘g‘ri:', channel);
-      return false;
-    }
-
+    if (!channel.startsWith('@')) return false;
     const member = await bot.telegram.getChatMember(channel, userId);
     return ['member', 'creator', 'administrator'].includes(member.status);
-  } catch (error) {
-    console.error(`❌ getChatMember xatolik (${channel}):`, error);
+  } catch {
     return false;
   }
 }
@@ -53,29 +44,28 @@ export async function isUserMember(
 export class BotService {
   private bot: Telegraf;
 
-  constructor() {
+  constructor(
+    @InjectRepository(Movie)
+    private movieRepo: Repository<Movie>,
+    @InjectRepository(User)
+    private userRepo: Repository<User>,
+    @InjectRepository(RequiredChannel)
+    private channelRepo: Repository<RequiredChannel>,
+  ) {
     this.bot = new Telegraf(process.env.BOT_TOKEN!);
-
-    // 🛠 Admin panel ulash
-    setupAdminPanel(this.bot);
-
-    // ▶️ /start
+    setupAdminPanel(this.bot, this.movieRepo);
     this.bot.start(async (ctx) => {
       const userId = ctx.from?.id;
       if (!userId) return;
 
-      // ❗ Kanal belgilanmagan bo‘lsa
       if (!channel) {
-        return ctx.reply(
-          '⚠️ Kanal sozlanmagan. Admin kanalni qo‘shishi kerak.',
-        );
+        return ctx.reply('⚠️ Kanal sozlanmagan.');
       }
 
       const isMember = await isUserMember(this.bot, channel, userId);
-
       if (!isMember) {
         return ctx.reply(
-          '👋 Botdan foydalanish uchun quyidagi kanalga obuna bo‘ling:',
+          '👋 Botdan foydalanish uchun kanalga obuna bo‘ling:',
           Markup.inlineKeyboard([
             [
               Markup.button.url(
@@ -88,20 +78,17 @@ export class BotService {
         );
       }
 
-      // ✅ Obuna bo‘lgan
       ctx.reply('✅ Xush kelibsiz! Kino kodini yuboring.');
     });
 
-    // 🔄 Obuna qayta tekshirish
     this.bot.action('check_subscription', async (ctx) => {
       const userId = ctx.from?.id;
       if (!userId) return;
 
       const isMember = await isUserMember(this.bot, channel, userId);
-
       if (!isMember) {
         return ctx.reply(
-          '🚫 Siz hali ham kanalga obuna bo‘lmagansiz. Iltimos, obuna bo‘ling:',
+          '🚫 Hali obuna bo‘lmagansiz.',
           Markup.inlineKeyboard([
             [
               Markup.button.url(
@@ -114,21 +101,20 @@ export class BotService {
         );
       }
 
-      ctx.reply(
-        '✅ Tabriklaymiz! Endi botdan foydalanishingiz mumkin. Kino kodini yuboring.',
-      );
+      ctx.reply('✅ Tabriklaymiz! Endi botdan foydalanishingiz mumkin.');
     });
 
-    // 🔎 Foydalanuvchi kino kodi yuboradi
-    this.bot.on('text', (ctx) => {
+    this.bot.on('text', async (ctx) => {
       const userId = ctx.from?.id;
-      if (userId && !users.includes(userId)) {
-        users.push(userId);
-        saveUsers();
+      if (!userId) return;
+
+      const exists = await this.userRepo.findOne({ where: { id: userId } });
+      if (!exists) {
+        await this.userRepo.save({ id: userId });
       }
 
       const code = ctx.message.text.trim();
-      const movie = findMovieByCode(code);
+      const movie = await this.movieRepo.findOne({ where: { code } });
 
       if (movie) {
         return ctx.replyWithVideo(movie.file_id, {
@@ -140,12 +126,10 @@ export class BotService {
     });
   }
 
-  // 🚀 Botni ishga tushirish
   async launch() {
     await this.bot.launch();
   }
 
-  // ⛔ Botni to‘xtatish
   async stop(reason: string) {
     await this.bot.stop(reason);
   }
