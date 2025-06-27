@@ -14,7 +14,7 @@ import { RequiredChannel } from './entity/requiredchannel.entity';
       username: process.env.PG_USER,
       password: String(process.env.PG_PASS),
       database: process.env.PG_DB,
-      entities:[Movie],
+      entities:[Movie, User, RequiredChannel],
       synchronize: true
     }),
     TypeOrmModule.forFeature([Movie, User, RequiredChannel]),
